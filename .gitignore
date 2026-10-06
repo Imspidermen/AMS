@@ -1,0 +1,32 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+# Application data
+*.db
+*.sqlite
+*.sqlite3
+data/*
+!data/.gitkeep
+models/*.onnx
+models/*.task
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+# Runtime
+*.pid
+*.log
+coverage/
+playwright-report/
+test-results/

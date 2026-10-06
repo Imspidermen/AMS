@@ -1,0 +1,17 @@
+# Runtime dependencies pinned for Python 3.11/3.12. Test extras are listed below.
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+SQLAlchemy==2.0.41
+alembic==1.16.1
+pydantic-settings==2.9.1
+argon2-cffi==25.1.0
+psycopg[binary]==3.2.9
+python-multipart==0.0.20
+email-validator==2.2.0
+python-dotenv==1.1.0
+cryptography==45.0.4
+numpy==1.26.4
+opencv-contrib-python-headless==4.11.0.86
+mediapipe==0.10.21
+pytest==8.4.0
+httpx==0.28.1
