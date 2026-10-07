@@ -74,3 +74,9 @@ def test_docs_aliases_redirect_to_the_versioned_documentation(client):
     spec = client.get("/api/v1/openapi.json")
     assert spec.status_code == 200
     assert spec.json()["info"]["title"].startswith("SSAMS")
+
+def test_frame_guard_is_production_only(client, monkeypatch):
+    """Local/preview development must stay embeddable; production must refuse framing."""
+    assert "X-Frame-Options" not in client.get("/api/health").headers
+    monkeypatch.setattr(settings, "app_env", "production")
+    assert client.get("/api/health").headers["X-Frame-Options"] == "DENY"

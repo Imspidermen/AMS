@@ -101,7 +101,10 @@ async def security_middleware(request: Request, call_next):
         response = JSONResponse(status_code=500, content={"detail": "Internal server error", "request_id": request_id})
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    if settings.app_env == "production":
+        # Production is never embeddable by other sites. Development omits the header so the
+        # sandbox/preview iframe can display the app; it is not a production setting.
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(self), geolocation=(self), microphone=()"
     if request.url.path.startswith("/assets/"):

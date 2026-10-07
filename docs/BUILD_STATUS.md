@@ -10,9 +10,9 @@ PostgreSQL/PowerShell/ngrok absent):
 ```bash
 # backend/ (venv installed from requirements.lock)
 .venv/bin/python -m pytest -q
-# Result: 41 passed, 1 upstream Starlette/AnyIO deprecation warning.
+# Result: 42 passed, 1 upstream Starlette/AnyIO deprecation warning.
 #         26 pre-existing tests + 9 new IST tests (tests/test_timezone.py)
-#         + 6 new unified-port tests (tests/test_unified_port.py).
+#         + 7 new unified-port tests (tests/test_unified_port.py).
 
 .venv/bin/python -m pytest tests/test_timezone.py -q
 # Result: 9 passed. Covers: Asia/Kolkata + +05:30 defaults; UTCâ†’IST ISO output
@@ -59,6 +59,10 @@ GET  /api/v1/admin/reports/attendance.csv  header marked_on_ist,marked_at_ist â€
 GET  /api/v1/admin/settings  campus_timezone Asia/Kolkata, campus_utc_offset +05:30
 POST /api/v1/auth/logout without CSRF header  403 (CSRF enforcement preserved)
 ```
+
+A late security-header adjustment follows the same rule: `X-Frame-Options: DENY` is now sent only
+when `APP_ENV=production` (see `backend/app/main.py`), so the sandbox/preview iframe can display the
+app during local development while production deployments stay non-embeddable.
 
 Vite development mode was also exercised: `npm run dev -- --host 0.0.0.0 --port 5173` served the
 SPA and proxied `/api/health`, `/api/v1/health/live` and a login POST to the backend on port 8000
