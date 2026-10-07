@@ -43,5 +43,8 @@ Write-Host @'
 Dependencies are installed. Before starting the app:
   1. Edit .env and set unique SESSION_SECRET and BIOMETRIC_ENCRYPTION_KEY values.
   2. Generate candidates with: cd backend; .venv\Scripts\python.exe -m app.cli generate-secrets
-  3. Start the app with: powershell -ExecutionPolicy Bypass -File scripts\run_windows.ps1
+  3. Start the unified single-port app (http://localhost:8000) with:
+       powershell -ExecutionPolicy Bypass -File scripts\run_windows.ps1
+     For the Vite development workflow (http://localhost:5173) use scripts\dev_windows.ps1.
+The application timezone defaults to Asia/Kolkata (IST, UTC+05:30); your Windows timezone is left untouched.
 '@

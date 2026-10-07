@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import require_roles
 from app.core.config import settings
-from app.core.security import utc_now
+from app.core.timezone import as_utc, campus_date, to_campus, utc_now
 from app.db.session import get_db
 from app.models.entities import (
     Attendance,
@@ -53,7 +53,8 @@ def profile(user: User = Depends(student_only), db: Session = Depends(get_db)):
             "email": user.email, "department_id": student.department_id,
             "department_name": department.name if department else None, "program": student.program,
             "semester_id": student.semester_id, "enrollment_status": student.enrollment_status,
-            "face_enrolled": face is not None, "face_enrolled_at": face.created_at if face else None,
+            "face_enrolled": face is not None,
+            "face_enrolled_at": to_campus(face.created_at) if face else None,
             "account_active": user.active}
 
 
@@ -87,13 +88,15 @@ def dashboard(user: User = Depends(student_only), db: Session = Depends(get_db))
         if session.id in seen or not _enrollment_matches(db, student.id, session):
             continue
         seen.add(session.id)
-        if _as_utc(session.ends_at) + timedelta(minutes=session.grace_minutes) >= now:
+        if as_utc(session.ends_at) + timedelta(minutes=session.grace_minutes) >= now:
             already = db.query(Attendance).filter(Attendance.student_id == student.id,
                                                   Attendance.session_id == session.id).first()
             if not already:
                 eligible_now.append({"id": session.id, "course_code": course.course_code,
                                      "course_name": course.name, "title": session.title,
-                                     "starts_at": session.starts_at, "ends_at": session.ends_at,
+                                     "starts_at": to_campus(session.starts_at),
+                                     "ends_at": to_campus(session.ends_at),
+                                     "starts_on_ist": campus_date(session.starts_at),
                                      "location_name": location.name})
     recent = (
         db.query(Attendance, ClassSession, Course)
@@ -112,7 +115,8 @@ def dashboard(user: User = Depends(student_only), db: Session = Depends(get_db))
             "face_enrolled": enrollment is not None,
             "eligible_sessions_now": eligible_now,
             "recent_attendance": [{"id": record.id, "course_code": course.course_code,
-                "course_name": course.name, "status": record.status, "marked_at": record.marked_at,
+                "course_name": course.name, "status": record.status,
+                "marked_at": to_campus(record.marked_at), "marked_on_ist": campus_date(record.marked_at),
                 "title": session.title} for record, session, course in recent],
             "unread_notifications": notifications,
             "attendance_threshold": min((x["threshold"] for x in summaries), default=settings.low_attendance_threshold)}
@@ -133,7 +137,7 @@ def list_my_corrections(user: User = Depends(student_only), db: Session = Depend
                        "course_name": course.name if course else None,
                        "requested_status": item.requested_status, "reason": item.reason,
                        "status": item.status, "decision_reason": item.decision_reason,
-                       "created_at": item.created_at, "decided_at": item.decided_at})
+                       "created_at": to_campus(item.created_at), "decided_at": to_campus(item.decided_at)})
     return result
 
 
@@ -143,7 +147,7 @@ def request_correction(payload: StudentCorrectionInput, user: User = Depends(stu
     session = db.get(ClassSession, payload.session_id)
     if not student or not session or session.cancelled or not _enrollment_matches(db, student.id, session):
         raise HTTPException(404, "Eligible class session not found")
-    if _as_utc(session.ends_at) > utc_now():
+    if as_utc(session.ends_at) > utc_now():
         raise HTTPException(422, "Attendance disputes may be submitted after the class session ends")
     pending = db.query(CorrectionRequest).filter(
         CorrectionRequest.student_id == student.id,
@@ -172,7 +176,3 @@ def _enrollment_matches(db: Session, student_id: str, session: ClassSession) -> 
     if session.section_id:
         query = query.filter(Enrollment.section_id == session.section_id)
     return query.first() is not None
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

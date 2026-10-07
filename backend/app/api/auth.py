@@ -13,9 +13,9 @@ from app.core.security import (
     new_secret,
     opaque_hash,
     secret_hash,
-    utc_now,
     verify_password,
 )
+from app.core.timezone import as_utc, utc_now
 from app.db.session import get_db
 from app.models.entities import Student, Teacher, User, UserSession
 from app.services.audit import audit
@@ -62,7 +62,7 @@ def issue_csrf(request: Request, response: Response, db: Session = Depends(get_d
     if csrf and session_raw:
         try:
             record = db.query(UserSession).filter(UserSession.token_hash == secret_hash(session_raw)).first()
-            if record and record.csrf_hash == opaque_hash(csrf) and _as_utc(record.expires_at) > utc_now():
+            if record and record.csrf_hash == opaque_hash(csrf) and as_utc(record.expires_at) > utc_now():
                 existing = csrf
         except RuntimeError:
             existing = None
@@ -136,7 +136,7 @@ def login(payload: LoginInput, request: Request, response: Response, db: Session
 @router.post("/activate")
 def activate(payload: ActivateInput, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.activation_hash == opaque_hash(payload.token)).first()
-    if not user or not user.activation_expires_at or _as_utc(user.activation_expires_at) <= utc_now() or not user.active:
+    if not user or not user.activation_expires_at or as_utc(user.activation_expires_at) <= utc_now() or not user.active:
         raise HTTPException(status_code=400, detail="Activation link is invalid or expired")
     try:
         ensure_password_policy(payload.password)
@@ -176,7 +176,3 @@ def logout_all(user: User = Depends(get_current_user), db: Session = Depends(get
     audit(db, user.id, "auth.logout_all", "user", user.id)
     db.commit()
     return Response(status_code=204)
-
-
-def _as_utc(value):
-    return value.replace(tzinfo=utc_now().tzinfo) if value.tzinfo is None else value.astimezone(utc_now().tzinfo)

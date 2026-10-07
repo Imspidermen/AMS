@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Build the React frontend (if needed) and serve the complete application on ONE port.
-# Unified mode: FastAPI serves the built frontend at / and the API at /api, so a single tunnel
-# (for example `ngrok http 8000`) exposes everything. Use scripts/dev_linux.sh for the two-process
-# Vite development workflow.
+# Development mode: FastAPI on APP_PORT plus the Vite dev server on port 5173.
+# Vite proxies /api to the backend, so the browser only talks to http://localhost:5173.
+# Use scripts/run_linux.sh for the unified single-port application (and for tunnels).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,13 +22,19 @@ if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$ROOT/frontend/dist/index.html" ]]; then
-  echo "Building the React frontend (npm run build)..."
-  (cd "$ROOT/frontend" && npm run build)
-fi
+backend_pid=''
+cleanup() {
+  if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
+    kill "$backend_pid" 2>/dev/null || true
+    wait "$backend_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 cd "$ROOT/backend"
 .venv/bin/python -m app.cli migrate
-echo "Starting SSAMS in unified single-port mode (frontend at /, API at /api)."
-echo "Expose the whole application with ONE tunnel, e.g.: ngrok http 8000"
-exec .venv/bin/python -m app.cli serve
+.venv/bin/python -m app.cli serve &
+backend_pid=$!
+printf 'API starting on http://0.0.0.0:8000; Vite proxies /api to this backend.\n'
+cd "$ROOT/frontend"
+npm run dev -- --host 0.0.0.0 --port 5173

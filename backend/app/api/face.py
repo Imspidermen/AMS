@@ -1,4 +1,3 @@
-from datetime import timezone
 import hashlib
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -6,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_roles
 from app.core.config import settings
+from app.core.timezone import to_campus, utc_now
 from app.db.session import get_db
 from app.models.entities import FaceEnrollment, Student, User
 from app.services.audit import audit
@@ -30,7 +30,7 @@ def face_status(user: User = Depends(get_current_user), db: Session = Depends(ge
         student = db.query(Student).filter(Student.user_id == user.id).first()
         profile = db.query(FaceEnrollment).filter(FaceEnrollment.student_id == student.id).first() if student else None
         status["enrolled"] = profile is not None
-        status["enrolled_at"] = profile.created_at if profile else None
+        status["enrolled_at"] = to_campus(profile.created_at) if profile else None
     else:
         status["enrolled"] = None
     return status
@@ -78,7 +78,7 @@ def enroll_face(
         student_id=student.id,
         encrypted_embedding=encrypted,
         model_id=MODEL_ID,
-        consent_at=__import__("datetime").datetime.now(timezone.utc),
+        consent_at=utc_now(),
         consent_version=CONSENT_VERSION,
         enrolled_by=user.id,
     )
@@ -87,7 +87,7 @@ def enroll_face(
     audit(db, user.id, "face_template.enrolled", "face_enrollment", record.id,
           {"student_id": student.id, "model_id": MODEL_ID, "consent_version": CONSENT_VERSION, "sample_count": len(images)})
     db.commit()
-    return {"enrolled": True, "model_id": MODEL_ID, "enrolled_at": record.created_at,
+    return {"enrolled": True, "model_id": MODEL_ID, "enrolled_at": to_campus(record.created_at),
             "notice_version": CONSENT_VERSION, "raw_frames_stored": False}
 
 

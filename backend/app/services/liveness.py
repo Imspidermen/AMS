@@ -3,9 +3,11 @@ import hashlib
 import math
 import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 
 import numpy as np
+
+from app.core.timezone import as_utc, utc_now
 
 from app.services.face import FaceInputError, decode_image
 
@@ -92,8 +94,8 @@ def create_actions() -> list[str]:
 
 
 def advance_challenge(challenge, analyzer: MediaPipeLiveness, image_bytes: bytes, now: datetime | None = None, max_frames: int = 80) -> dict:
-    now = _as_utc(now or datetime.now(timezone.utc))
-    expires_at = _as_utc(challenge.expires_at)
+    now = as_utc(now or utc_now())
+    expires_at = as_utc(challenge.expires_at)
     if now >= expires_at:
         return {"complete": False, "progress": 0, "total": len(challenge.actions), "error": "expired"}
     if challenge.consumed_at:
@@ -186,12 +188,7 @@ def _eye_aspect_ratio(points, indices) -> float:
     return vertical / (2.0 * horizontal) if horizontal > 1e-8 else 0.0
 
 
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-
-
 def _parse_time(value: str | None) -> datetime | None:
     if not value:
         return None
-    parsed = datetime.fromisoformat(value)
-    return _as_utc(parsed)
+    return as_utc(datetime.fromisoformat(value))

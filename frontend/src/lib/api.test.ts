@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, formatDate, formatMonthDay, formatPercent, formatTime, setCampusTimezone } from './api';
+import {
+  api,
+  ApiError,
+  DEFAULT_CAMPUS_TIMEZONE,
+  formatDate,
+  formatMonthDay,
+  formatPercent,
+  formatTime,
+  getCampusTimezone,
+  setCampusTimezone,
+} from './api';
 
 function response(status: number, payload: unknown = {}) {
   return { status, ok: status >= 200 && status < 300, json: vi.fn().mockResolvedValue(payload) } as unknown as Response;
@@ -55,6 +65,30 @@ describe('api client', () => {
     await expect(api('/auth/login', { method: 'POST', body: '{}' })).rejects.toBeInstanceOf(ApiError);
     expect(expired).not.toHaveBeenCalled();
     window.removeEventListener('ssams:session-expired', expired);
+  });
+});
+
+describe('default campus timezone (India Standard Time)', () => {
+  it('falls back to Asia/Kolkata so attendance is never shown in UTC', () => {
+    setCampusTimezone('');
+    expect(DEFAULT_CAMPUS_TIMEZONE).toBe('Asia/Kolkata');
+    expect(getCampusTimezone()).toBe('Asia/Kolkata');
+    // 2026-10-07 15:00 UTC is 20:30 IST on the same Indian calendar day.
+    const value = '2026-10-07T15:00:00.000Z';
+    expect(formatDate(value)).toContain('Oct');
+    expect(formatTime(value)).toMatch(/8:30/);
+    expect(formatMonthDay(value)).toEqual({ month: 'Oct', day: '7' });
+  });
+
+  it('keeps the Indian calendar day across the UTC midnight boundary', () => {
+    setCampusTimezone('');
+    // 2026-10-07 19:00 UTC is already 00:30 IST on 8 October.
+    expect(formatMonthDay('2026-10-07T19:00:00.000Z')).toEqual({ month: 'Oct', day: '8' });
+  });
+
+  it('ignores an unknown timezone name instead of throwing', () => {
+    setCampusTimezone('Not/AZone');
+    expect(formatTime('2026-10-07T15:00:00.000Z')).toMatch(/8:30/);
   });
 });
 

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 import secrets
 from typing import Literal
 
@@ -9,7 +9,16 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_roles
 from app.core.config import settings
-from app.core.security import hash_password, opaque_hash, utc_now
+from app.core.security import hash_password, opaque_hash
+from app.core.timezone import (
+    CampusRangeEnd,
+    CampusRangeStart,
+    as_utc,
+    campus_date,
+    to_campus,
+    utc_now,
+    utc_offset_label,
+)
 from app.db.session import get_db
 from app.models.entities import (
     AcademicYear,
@@ -160,7 +169,7 @@ class SessionInput(BaseModel):
     def require_timezone(cls, value: datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("Schedule timestamps must include a timezone (use ISO-8601 with Z or offset)")
-        return value.astimezone(timezone.utc)
+        return as_utc(value)
 
     @model_validator(mode="after")
     def validate_range(self):
@@ -608,7 +617,7 @@ def create_session(payload: SessionInput, actor: User = Depends(admin_only), db:
     db.add(item)
     db.flush()
     audit(db, actor.id, "session.created", "class_session", item.id,
-          {"course_id": item.course_id, "starts_at": item.starts_at.isoformat()})
+          {"course_id": item.course_id, "starts_at": to_campus(item.starts_at).isoformat()})
     db.commit()
     return session_view(db, item)
 
@@ -633,7 +642,7 @@ def finalize_session(session_id: str, actor: User = Depends(admin_only), db: Ses
         raise HTTPException(404, "Session not found")
     if item.cancelled:
         raise HTTPException(409, "Cancelled sessions cannot be finalized")
-    if _as_utc(item.ends_at) + timedelta(minutes=item.grace_minutes) > utc_now():
+    if as_utc(item.ends_at) + timedelta(minutes=item.grace_minutes) > utc_now():
         raise HTTPException(409, "Session grace period has not ended")
     if item.finalized_at:
         return {"session_id": item.id, "created_absences": 0, "already_finalized": True}
@@ -657,7 +666,7 @@ def finalize_session(session_id: str, actor: User = Depends(admin_only), db: Ses
 @router.get("/attendance")
 def list_attendance(course_id: str | None = None, session_id: str | None = None, student_id: str | None = None,
                    state: Literal["present", "late", "absent", "excused"] | None = Query(None, alias="status"),
-                   start: datetime | None = None, end: datetime | None = None,
+                   start: CampusRangeStart | None = None, end: CampusRangeEnd | None = None,
                    limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
                    db: Session = Depends(get_db), _: User = Depends(admin_only)):
     query = db.query(Attendance, Student, User, ClassSession, Course).join(Student, Student.id == Attendance.student_id)
@@ -674,7 +683,8 @@ def list_attendance(course_id: str | None = None, session_id: str | None = None,
     if start:
         query = query.filter(Attendance.marked_at >= start)
     if end:
-        query = query.filter(Attendance.marked_at <= end)
+        # Exclusive campus-time bound so that a bare `end=YYYY-MM-DD` includes 23:59 IST of that day.
+        query = query.filter(Attendance.marked_at < end)
     total = query.count()
     rows = query.order_by(Attendance.marked_at.desc()).offset(offset).limit(limit).all()
     return {"items": [attendance_view(att, student, user, session, course) for att, student, user, session, course in rows],
@@ -716,7 +726,8 @@ def list_verification_attempts(status_filter: str | None = Query(None, alias="st
         query = query.filter(VerificationAttempt.status == status_filter)
     return {"items": [{"id": x.id, "user_id": x.user_id, "session_id": x.session_id, "status": x.status,
                        "reason": x.reason, "distance_m": x.distance_m, "accuracy_m": x.reported_accuracy_m,
-                       "created_at": x.created_at} for x in query.order_by(VerificationAttempt.created_at.desc()).offset(offset).limit(limit).all()]}
+                       "created_at": to_campus(x.created_at),
+                       "created_on_ist": campus_date(x.created_at)} for x in query.order_by(VerificationAttempt.created_at.desc()).offset(offset).limit(limit).all()]}
 
 
 @router.get("/corrections")
@@ -741,7 +752,9 @@ class CorrectionDecision(BaseModel):
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db), _: User = Depends(admin_only)):
     row = db.get(AppSetting, "low_attendance_threshold")
-    return {"low_attendance_threshold": float(row.value) if row else 75.0}
+    return {"low_attendance_threshold": float(row.value) if row else 75.0,
+            "campus_timezone": settings.campus_timezone,
+            "campus_utc_offset": utc_offset_label()}
 
 
 @router.put("/settings")
@@ -804,7 +817,8 @@ def list_audit(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=
               db: Session = Depends(get_db), _: User = Depends(admin_only)):
     rows = db.query(AuditEvent).order_by(AuditEvent.created_at.desc()).offset(offset).limit(limit).all()
     return [{"id": x.id, "actor_user_id": x.actor_user_id, "action": x.action, "entity_type": x.entity_type,
-             "entity_id": x.entity_id, "details": x.details, "created_at": x.created_at} for x in rows]
+             "entity_id": x.entity_id, "details": x.details, "created_at": to_campus(x.created_at),
+             "created_on_ist": campus_date(x.created_at)} for x in rows]
 
 
 def course_view(course: Course) -> dict:
@@ -840,16 +854,17 @@ def session_view(db: Session, session: ClassSession) -> dict:
     return {"id": session.id, "course_id": session.course_id, "course_code": course.course_code if course else None,
             "course_name": course.name if course else None, "section_id": session.section_id,
             "location_id": session.location_id, "location_name": location.name if location else None,
-            "title": session.title, "starts_at": session.starts_at, "ends_at": session.ends_at,
-            "grace_minutes": session.grace_minutes, "cancelled": session.cancelled,
-            "finalized": session.finalized_at is not None}
+            "title": session.title, "starts_at": to_campus(session.starts_at), "ends_at": to_campus(session.ends_at),
+            "starts_on_ist": campus_date(session.starts_at), "grace_minutes": session.grace_minutes,
+            "cancelled": session.cancelled, "finalized": session.finalized_at is not None}
 
 
 def attendance_view(attendance: Attendance, student: Student, user: User, session: ClassSession, course: Course) -> dict:
     return {"id": attendance.id, "student_id": student.id, "student_number": student.student_number,
             "student_name": user.full_name, "session_id": session.id, "course_id": course.id,
             "course_code": course.course_code, "course_name": course.name, "status": attendance.status,
-            "marked_at": attendance.marked_at, "reason": attendance.correction_reason,
+            "marked_at": to_campus(attendance.marked_at),
+            "marked_on_ist": campus_date(attendance.marked_at), "reason": attendance.correction_reason,
             "updated_by": attendance.updated_by}
 
 
@@ -863,8 +878,4 @@ def correction_view(db: Session, item: CorrectionRequest) -> dict:
             "student_name": user.full_name if user else None, "session_id": item.session_id,
             "course_name": course.name if course else None, "requested_status": item.requested_status,
             "reason": item.reason, "status": item.status, "submitted_by": submitter.full_name if submitter else None,
-            "decision_reason": item.decision_reason, "created_at": item.created_at}
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            "decision_reason": item.decision_reason, "created_at": to_campus(item.created_at)}

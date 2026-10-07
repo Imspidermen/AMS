@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import math
 
+from app.core.timezone import as_utc, utc_now
 from app.models.entities import Location
 
 EARTH_RADIUS_M = 6_371_000.0
@@ -46,9 +47,9 @@ def validate_location_reading(
         distance = haversine_distance_m(latitude, longitude, location.latitude, location.longitude)
     except ValueError:
         return GeoResult(False, "invalid_coordinates", 0.0, accuracy_m)
-    clock = now or datetime.now(timezone.utc)
-    sample_time = _as_utc(measured_at)
-    age = (clock.astimezone(timezone.utc) - sample_time).total_seconds()
+    clock = as_utc(now or utc_now())
+    sample_time = as_utc(measured_at)
+    age = (clock - sample_time).total_seconds()
     if age < -30 or age > max_age_seconds:
         return GeoResult(False, "stale_location", distance, accuracy_m)
     if accuracy_m > location.max_accuracy_m:
@@ -56,7 +57,3 @@ def validate_location_reading(
     if distance > location.radius_m:
         return GeoResult(False, "outside_geofence", distance, accuracy_m)
     return GeoResult(True, None, distance, accuracy_m)
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

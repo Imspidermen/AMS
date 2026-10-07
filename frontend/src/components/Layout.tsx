@@ -7,7 +7,7 @@ import {
   ShieldCheck, UserRound, Users, Bell, X,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth';
-import { api, setCampusTimezone } from '../lib/api';
+import { api, DEFAULT_CAMPUS_TIMEZONE, setCampusTimezone } from '../lib/api';
 
 const nav = {
   admin: [
@@ -51,7 +51,7 @@ export function Layout() {
     queryFn: () => api<{ unread: number }>('/notifications?limit=1'),
     refetchInterval: 60_000,
   });
-  const campus = useQuery({ queryKey: ['campus-health'], queryFn: () => api<{campus_timezone:string}>('/health/ready'), retry: false });
+  const campus = useQuery({ queryKey: ['campus-health'], queryFn: () => api<{campus_timezone:string}>('/health/live'), retry: false });
   useEffect(() => {
     if (campus.data?.campus_timezone) {
       setCampusTimezone(campus.data.campus_timezone);
@@ -85,7 +85,7 @@ export function Layout() {
       <div className="sidebar-bottom">
         <div className="privacy-note"><ShieldCheck size={16} /><span>Verification is private and processed on this institution’s server.</span></div>
         <button className="sidebar-help" onClick={() => navigate('/help')}><CircleHelp size={17} /> Help & guidance</button>
-        <div className="sidebar-foot">SSAMS · Locally operated<br />Server time is recorded in UTC</div>
+        <div className="sidebar-foot">SSAMS · Locally operated<br />Times stored as UTC · displayed in {campus.data?.campus_timezone || DEFAULT_CAMPUS_TIMEZONE}</div>
       </div>
     </aside>
     {menuOpen && <button className="scrim" onClick={() => setMenuOpen(false)} aria-label="Close navigation overlay" />}

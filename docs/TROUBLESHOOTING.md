@@ -7,9 +7,9 @@
    ```bash
    cd backend
    .venv/bin/python -m app.cli migrate
-   .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+   .venv/bin/python -m app.cli serve        # unified: frontend + API on APP_PORT
    ```
-3. Check `/api/v1/health/ready` and logs for a generic request ID. Do not paste `.env`, cookies, liveness tokens, activation/reset URLs, or face/GPS payloads into a support ticket.
+3. Check `/api/health` and `/api/v1/health/ready` and logs for a generic request ID. Do not paste `.env`, cookies, liveness tokens, activation/reset URLs, or face/GPS payloads into a support ticket.
 4. Use `alembic current`, `alembic heads`, and `alembic check`; take a backup before any repair. Never delete the production database to fix a migration mismatch.
 
 ## Sign-in, activation, or CSRF errors
@@ -35,11 +35,30 @@
 - `BIOMETRIC_ENCRYPTION_KEY` must be a valid Fernet key and must remain available. Do not regenerate it for an existing database; key loss prevents decryption of enrolled templates.
 - Face mismatch, poor lighting, blur, multiple faces, poor pose, missing face, liveness expiry, and model errors are separate failure paths. A failed attempt does not write attendance; follow the institution's manual review/alternate attendance policy.
 
+## Times or the attendance day look wrong
+
+- The application timezone is `CAMPUS_TIMEZONE` in the root `.env` (default `Asia/Kolkata`, IST). Timestamps are stored as UTC instants and converted for every output, so a database row will not look like the value on screen — that is expected. Use `GET /api/health`, `/api/v1/health/ready`, the Admin *Policy & health* screen, or `python -m app.cli timezone-check` to see the effective zone and offset.
+- Only `Asia/Kolkata`, `Asia/Calcutta` or a different valid IANA name belongs here; `+05:30`, `IST5` or `330` are not valid IANA names and are rejected at startup.
+- Attendance date filters use campus days: `?start=2026-10-07&end=2026-10-07` covers 00:00–23:59 IST of 7 October (18:30 UTC on 6 October → 18:30 UTC on 7 October). That is why an early-morning UTC row can belong to the previous Indian date — the API also returns `marked_on_ist` so you do not have to compute it.
+- CSV exports and the printable report are IST by default (`marked_on_ist`, `marked_at_ist`, "Recorded at (IST)"). If a spreadsheet shows a different day, check its own timezone settings before changing the application.
+- The Windows system timezone does not need to be (and should not be) changed. Nothing in the application reads the host timezone for business logic; only log line formatting follows it.
+
+## One port / tunnel problems (ngrok, Cloudflare Tunnel)
+
+- Serve the unified application (`scripts/run_windows.ps1`, `scripts/run_linux.sh`, or `python -m app.cli serve`) and expose **only** `APP_PORT` (default 8000): `ngrok http 8000`. Never start a second tunnel for the Vite dev port.
+- Check `http://localhost:8000/`, `/api/health` and `/docs` locally first: if those work, a failing public URL is a tunnel issue, not an application issue.
+- ngrok's free tier shows a one-time browser interstitial page ("Visit Site") for new visitors — click it and the application loads normally; API/XHR requests are unaffected.
+- Set `COOKIE_SECURE=true` when the public URL is HTTPS so session cookies are marked Secure. `APP_ENV=production` does this automatically. Do not enable it while testing plain `http://localhost`, or the browser will drop the session cookie.
+- Keep the tunnel authenticated/private for biometric use; a public URL means the login page — and the camera flow — is reachable by anyone who finds it.
+- If the frontend loads but a deep link (for example `/admin/audit`) returns a page error, confirm the build is present (`frontend/dist/index.html`) and that the reverse proxy forwards unknown paths to the application instead of returning its own 404.
+- If `/api/...` returns HTML instead of JSON, something is serving the SPA for API paths: the application never does that (unknown `/api/*` paths return a JSON 404), so check the proxy's route ordering.
+
 ## Vite API proxy or CORS errors
 
-- The browser calls relative `/api/v1/...` endpoints. Vite forwards `/api` to `http://127.0.0.1:8000` by default from the dev server; start both processes and keep port `8000` reachable locally.
-- If the API is on another host/port, set `SSAMS_API_TARGET` in `frontend/.env.local` before starting Vite. The browser must still use relative URLs; do not set browser code to `localhost` for another service.
-- For direct cross-origin production calls, explicitly list the exact HTTPS origin in `CORS_ORIGINS`; avoid wildcards with cookies. Prefer a same-origin reverse proxy.
+- The browser calls relative `/api/v1/...` endpoints. Vite forwards `/api` to `http://127.0.0.1:$APP_PORT` (root `.env`, default 8000) from the dev server; start both processes and keep that port reachable locally.
+- If the API is on another host/port, set `SSAMS_API_TARGET` in the root `.env` or `frontend/.env.local` before starting Vite. The browser must still use relative URLs; never point browser code at `localhost:8000` for another origin.
+- In unified mode (and through a tunnel) the frontend and the API share one origin, so no CORS configuration is required; `CORS_ORIGINS` is empty by default and adding a wildcard would be rejected anyway because sessions use credentialed cookies.
+- For a genuine cross-origin deployment, explicitly list the exact HTTPS origin in `CORS_ORIGINS`; prefer a same-origin reverse proxy.
 - Vite's broad `allowedHosts` setting is development-preview convenience only. Do not use Vite as an Internet-facing production server.
 
 ## PostgreSQL or backup utilities

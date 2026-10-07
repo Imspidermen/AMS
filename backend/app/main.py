@@ -1,19 +1,21 @@
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 import secrets
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select, text
 from starlette import status
 
 from app.api import admin, attendance, auth, face, notifications, reports, student, teacher
 from app.api.dependencies import CSRF_COOKIE, SESSION_COOKIE
 from app.core.config import settings
-from app.core.security import opaque_hash, secret_hash, utc_now
+from app.core.security import opaque_hash, secret_hash
+from app.core.timezone import as_utc, campus_now, utc_now, utc_offset_label
 from app.db.session import SessionLocal, engine
 from app.models.entities import User, UserSession
 
@@ -23,6 +25,12 @@ logger = logging.getLogger("ssams")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    logger.info(
+        "SSAMS starting campus_timezone=%s offset=UTC%s port=%s unified_frontend=%s",
+        settings.campus_timezone, utc_offset_label(), settings.app_port,
+        "served_from_" + str(settings.frontend_dist_path) if settings.frontend_build_available
+        else "not_built_run_npm_run_build",
+    )
     yield
     engine.dispose()
 
@@ -39,13 +47,16 @@ app = FastAPI(
 )
 app.state.login_attempts = {}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-CSRF-Token", "X-Liveness-Token", "Idempotency-Key"],
-)
+# One origin serves the frontend and the API, so no CORS layer is required by default. It is added
+# only when CORS_ORIGINS explicitly lists exact origins (a deliberate cross-origin deployment).
+if settings.allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-CSRF-Token", "X-Liveness-Token", "Idempotency-Key"],
+    )
 
 
 @app.middleware("http")
@@ -75,7 +86,7 @@ async def security_middleware(request: Request, call_next):
                     return JSONResponse(status_code=503, content={"detail": "Authentication is not configured", "request_id": request_id})
                 with SessionLocal() as db:
                     session = db.query(UserSession).filter(UserSession.token_hash == digest).first()
-                    if (not session or _as_utc(session.expires_at) <= utc_now()
+                    if (not session or as_utc(session.expires_at) <= utc_now()
                             or not secrets.compare_digest(session.csrf_hash, opaque_hash(csrf_header))):
                         return JSONResponse(status_code=403, content={"detail": "Session or CSRF token is invalid", "request_id": request_id})
     content_length = request.headers.get("content-length")
@@ -90,10 +101,17 @@ async def security_middleware(request: Request, call_next):
         response = JSONResponse(status_code=500, content={"detail": "Internal server error", "request_id": request_id})
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    if settings.app_env == "production":
+        # Production is never embeddable by other sites. Development omits the header so the
+        # sandbox/preview iframe can display the app; it is not a production setting.
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(self), geolocation=(self), microphone=()"
-    response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/assets/"):
+        # Vite emits content-hashed asset names, so they are safe to cache for a long time.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        response.headers["Cache-Control"] = "no-store"
     if settings.secure_cookies:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
@@ -113,14 +131,30 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         "request_id": getattr(request.state, "request_id", "")})
 
 
-@app.get("/", include_in_schema=False)
-def root():
-    return {"name": settings.app_name, "api": "/api/v1", "docs": "/api/v1/docs"}
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+def root(request: Request):
+    """The React application in unified-port mode, or API discovery metadata otherwise."""
+    if settings.frontend_build_available:
+        return _frontend_file(settings.frontend_dist_path, "index.html")
+    return {"name": settings.app_name, "api": "/api/v1", "docs": "/docs",
+            "campus_timezone": settings.campus_timezone}
+
+
+@app.api_route("/api/health", methods=["GET", "HEAD"], tags=["health"], include_in_schema=False)
+def health():
+    """Convenience alias for monitoring and tunnels; never exposes secrets."""
+    return {"status": "ok", "service": "ssams-api", "api": "/api/v1",
+            "campus_timezone": settings.campus_timezone,
+            "campus_utc_offset": utc_offset_label(),
+            "server_time_local": campus_now().isoformat(timespec="seconds")}
 
 
 @app.get("/api/v1/health/live", tags=["health"])
 def liveness():
-    return {"status": "alive", "service": "ssams-api"}
+    return {"status": "alive", "service": "ssams-api",
+            "campus_timezone": settings.campus_timezone,
+            "campus_utc_offset": utc_offset_label(),
+            "server_time_local": campus_now().isoformat(timespec="seconds")}
 
 
 @app.get("/api/v1/health/ready", tags=["health"])
@@ -134,7 +168,9 @@ def readiness():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail={"status": "not_ready", "database": "unavailable_or_unmigrated"}) from exc
     model_status = attendance.face_provider.status()
-    return {"status": "ready", "database": "connected", "campus_timezone": settings.campus_timezone, "vision_models": model_status,
+    return {"status": "ready", "database": "connected", "campus_timezone": settings.campus_timezone,
+            "campus_utc_offset": utc_offset_label(),
+            "server_time_local": campus_now().isoformat(timespec="seconds"), "vision_models": model_status,
             "vision_degraded": not model_status["ready"] or not model_status["biometric_storage_key_configured"],
             "offline_inference": "local CPU; models must be installed explicitly"}
 
@@ -154,7 +190,53 @@ for router in versioned:
     app.include_router(router, prefix="/api/v1")
 
 
-def _as_utc(value):
-    from datetime import timezone
+# Short aliases for the versioned API documentation (the SPA fallback never sees these paths).
+@app.api_route("/docs", methods=["GET", "HEAD"], include_in_schema=False)
+def docs_alias():
+    return RedirectResponse("/api/v1/docs", status_code=307)
 
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+@app.api_route("/redoc", methods=["GET", "HEAD"], include_in_schema=False)
+def redoc_alias():
+    return RedirectResponse("/api/v1/redoc", status_code=307)
+
+
+@app.api_route("/openapi.json", methods=["GET", "HEAD"], include_in_schema=False)
+def openapi_alias():
+    return RedirectResponse("/api/v1/openapi.json", status_code=307)
+
+
+def _frontend_file(root: Path, relative: str) -> FileResponse:
+    """Serve one file from the built frontend directory, refusing to escape that directory."""
+    root = root.resolve()
+    candidate = (root / relative).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Frontend asset not found")
+    media_type = "text/html" if candidate.suffix == ".html" else None
+    return FileResponse(candidate, media_type=media_type)
+
+
+if settings.frontend_build_available:
+    frontend_root = settings.frontend_dist_path
+    assets_root = frontend_root / "assets"
+    if assets_root.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/assets", StaticFiles(directory=assets_root), name="frontend-assets")
+
+    @app.api_route("/{spa_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    def spa_fallback(spa_path: str, request: Request):
+        """Single-page-application fallback: real files first, then index.html for deep links."""
+        if spa_path == "api" or spa_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"detail": "API route not found",
+                                                          "request_id": getattr(request.state, "request_id", "")})
+        relative = spa_path or "index.html"
+        if Path(relative).suffix and (frontend_root / relative).is_file():
+            return _frontend_file(frontend_root, relative)
+        return _frontend_file(frontend_root, "index.html")
+else:
+    logger.warning(
+        "Built frontend not found at %s: only the API and /api/v1/docs are served. "
+        "Run `npm run build` inside frontend/ (or scripts/run_windows.ps1) for the unified single-port app.",
+        settings.frontend_dist_path,
+    )

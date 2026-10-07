@@ -1,12 +1,13 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from app.core.config import settings
+from app.core.timezone import utc_now as _utc_now
 
 password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 
@@ -40,7 +41,8 @@ def opaque_hash(value: str) -> str:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    """Re-exported from :mod:`app.core.timezone` so existing imports keep one definition."""
+    return _utc_now()
 
 
 def ensure_password_policy(password: str) -> None:
