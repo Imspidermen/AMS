@@ -1,8 +1,26 @@
 export type Role = 'admin' | 'teacher' | 'student';
 
-let campusTimezone = 'UTC';
-export function setCampusTimezone(value: string) { campusTimezone = value || 'UTC'; }
+/**
+ * Application/business timezone. The API reports the configured campus timezone at /health/live;
+ * until that answers (and if it is unavailable) the client keeps using India Standard Time so a
+ * browser in another system timezone never silently shows UTC attendance times.
+ */
+export const DEFAULT_CAMPUS_TIMEZONE = 'Asia/Kolkata';
+
+let campusTimezone = DEFAULT_CAMPUS_TIMEZONE;
+export function setCampusTimezone(value?: string | null) {
+  campusTimezone = value && value.trim() ? value.trim() : DEFAULT_CAMPUS_TIMEZONE;
+}
 export function getCampusTimezone() { return campusTimezone; }
+
+function zoneFormatter(options: Intl.DateTimeFormatOptions, timezone: string | undefined): Intl.DateTimeFormat {
+  const zone = timezone && timezone.trim() ? timezone.trim() : campusTimezone;
+  try {
+    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: zone });
+  } catch {
+    return new Intl.DateTimeFormat(undefined, { ...options, timeZone: DEFAULT_CAMPUS_TIMEZONE });
+  }
+}
 
 export interface CurrentUser {
   id: string;
@@ -72,23 +90,21 @@ export function formatDate(value?: string | null, timezone: string | undefined =
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium', timeStyle: 'short', ...(timezone ? { timeZone: timezone } : {}),
-  }).format(date);
+  return zoneFormatter({ dateStyle: 'medium', timeStyle: 'short' }, timezone).format(date);
 }
 
 export function formatTime(value?: string | null, timezone: string | undefined = campusTimezone): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
-  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', ...(timezone ? { timeZone: timezone } : {}) }).format(date);
+  return zoneFormatter({ hour: 'numeric', minute: '2-digit' }, timezone).format(date);
 }
 
 export function formatMonthDay(value?: string | null, timezone: string | undefined = campusTimezone): { month: string; day: string } {
   if (!value) return { month: '—', day: '—' };
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return { month: '—', day: '—' };
-  const parts = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', ...(timezone ? { timeZone: timezone } : {}) }).formatToParts(date);
+  const parts = zoneFormatter({ month: 'short', day: 'numeric' }, timezone).formatToParts(date);
   return { month: parts.find((part) => part.type === 'month')?.value || '—', day: parts.find((part) => part.type === 'day')?.value || '—' };
 }
 

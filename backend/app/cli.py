@@ -16,6 +16,15 @@ from sqlalchemy import text
 
 from app.core.config import REPO_ROOT, settings
 from app.core.security import ensure_password_policy, hash_password
+from app.core.timezone import (
+    campus_date,
+    campus_day_bounds,
+    campus_now,
+    campus_timezone_name,
+    to_campus,
+    utc_offset_label,
+    utc_now,
+)
 from app.db.session import SessionLocal
 from app.models.entities import AuditEvent, FaceEnrollment, LivenessChallenge, User, UserSession, VerificationAttempt
 from app.services.face import LocalFaceProvider, SFACE_FILE, SFACE_SHA256, YUNET_FILE, YUNET_SHA256
@@ -92,6 +101,44 @@ def install_models(accept_terms: bool) -> None:
     print("Pinned local model files verified. No model download is needed at application startup.")
 
 
+def serve() -> None:
+    """Serve the complete application (built frontend + API) on the single configured port."""
+    import uvicorn
+
+    host, port = settings.app_host, settings.app_port
+    local = "localhost" if host in {"0.0.0.0", "::"} else host
+    print(f"SSAMS unified server: timezone {campus_timezone_name()} (UTC{utc_offset_label()})")
+    print(f"  Application : http://{local}:{port}/")
+    print(f"  API         : http://{local}:{port}/api/v1")
+    print(f"  API docs    : http://{local}:{port}/docs")
+    print(f"  Health      : http://{local}:{port}/api/health")
+    if settings.frontend_build_available:
+        print(f"  Frontend    : serving {settings.frontend_dist_path}")
+    else:
+        print(f"  Frontend    : NOT BUILT (expected {settings.frontend_dist_path}); run `npm run build` in frontend/")
+    print(f"  Tunnel      : ngrok http {port}  (expose this one port only)")
+    uvicorn.run("app.main:app", host=host, port=port, log_level="info")
+
+
+def timezone_check() -> None:
+    """Print the application timezone, the current instant and today's IST attendance window.
+
+    A quick way to confirm that a server whose host clock is UTC still resolves the Indian calendar
+    date correctly (for example when India has already crossed midnight but UTC has not).
+    """
+    import time
+
+    now = utc_now()
+    day_start, day_end = campus_day_bounds(now)
+    print(f"Application timezone  : {campus_timezone_name()} (UTC{utc_offset_label()})")
+    print(f"Current instant (UTC) : {now.isoformat()}")
+    print(f"Campus local time     : {campus_now().isoformat()}")
+    print(f"Indian calendar date  : {campus_date(now).isoformat()} (IST)")
+    print(f"Today's IST day       : {to_campus(day_start).isoformat()} .. {to_campus(day_end).isoformat()}")
+    print(f"Stored day boundaries : {day_start.isoformat()} .. {day_end.isoformat()} (UTC, exclusive end)")
+    print(f"Host OS local clock   : {time.strftime('%Y-%m-%d %H:%M %Z')} (never used for business logic)")
+
+
 def migrate() -> None:
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     command.upgrade(config, "head")
@@ -121,8 +168,6 @@ def model_check() -> None:
 def retention(args) -> None:
     if args.verification_days < 1 or args.challenge_days < 1:
         raise SystemExit("Retention days must be at least 1")
-    from app.core.security import utc_now
-
     now = utc_now()
     verification_cutoff = now - timedelta(days=args.verification_days)
     challenge_cutoff = now - timedelta(days=args.challenge_days)
@@ -167,6 +212,8 @@ def main() -> None:
     subparsers.add_parser("generate-secrets", help="Print cryptographically random secret values")
     subparsers.add_parser("create-admin", help="Interactively create the first administrator")
     subparsers.add_parser("migrate", help="Apply Alembic migrations")
+    subparsers.add_parser("serve", help="Serve the built frontend and the API on one public port")
+    subparsers.add_parser("timezone-check", help="Show the campus timezone and today's IST boundaries")
     install = subparsers.add_parser("install-models", help="Download and checksum approved local models")
     install.add_argument("--accept-model-terms", action="store_true")
     subparsers.add_parser("model-check", help="Verify models and initialize local CPU inference")
@@ -184,6 +231,10 @@ def main() -> None:
         create_admin()
     elif args.command == "migrate":
         migrate()
+    elif args.command == "serve":
+        serve()
+    elif args.command == "timezone-check":
+        timezone_check()
     elif args.command == "install-models":
         install_models(args.accept_model_terms)
     elif args.command == "model-check":

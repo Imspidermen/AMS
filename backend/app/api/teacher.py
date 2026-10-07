@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import require_roles
 from app.api.admin import CorrectionDecision, correction_view
-from app.core.security import utc_now
+from app.core.timezone import CampusRangeEnd, CampusRangeStart, as_utc, campus_date, to_campus, utc_now
 from app.db.session import get_db
 from app.models.entities import (
     Attendance,
@@ -52,7 +52,7 @@ def dashboard(user: User = Depends(teacher_only), db: Session = Depends(get_db))
     assignments = _assignments(db, teacher.id)
     course_ids = {a.course_id for a in assignments}
     sessions = db.query(ClassSession).filter(ClassSession.course_id.in_(course_ids)).all() if course_ids else []
-    active_sessions = [s for s in sessions if not s.cancelled and _as_utc(s.ends_at) + timedelta(minutes=s.grace_minutes) >= utc_now()]
+    active_sessions = [s for s in sessions if not s.cancelled and as_utc(s.ends_at) + timedelta(minutes=s.grace_minutes) >= utc_now()]
     attendance_count = db.query(Attendance).filter(Attendance.session_id.in_([s.id for s in sessions])).count() if sessions else 0
     pending = db.query(CorrectionRequest).filter(CorrectionRequest.status == "pending").all()
     pending = [item for item in pending if _session_is_assigned(db, teacher.id, db.get(ClassSession, item.session_id))]
@@ -81,7 +81,8 @@ def assigned_courses(user: User = Depends(teacher_only), db: Session = Depends(g
 
 
 @router.get("/sessions")
-def assigned_sessions(course_id: str | None = None, from_date: datetime | None = None, to_date: datetime | None = None,
+def assigned_sessions(course_id: str | None = None, from_date: CampusRangeStart | None = None,
+                    to_date: CampusRangeEnd | None = None,
                     limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0),
                     user: User = Depends(teacher_only), db: Session = Depends(get_db)):
     teacher = _teacher_for_user(db, user)
@@ -94,7 +95,8 @@ def assigned_sessions(course_id: str | None = None, from_date: datetime | None =
     if from_date:
         query = query.filter(ClassSession.starts_at >= from_date)
     if to_date:
-        query = query.filter(ClassSession.starts_at <= to_date)
+        # Exclusive bound: a bare date covers the whole campus day, so 23:59 IST is still included.
+        query = query.filter(ClassSession.starts_at < to_date)
     rows = query.order_by(ClassSession.starts_at.desc()).all()
     rows = [row for row in rows if _session_is_assigned(db, teacher.id, row)]
     total = len(rows)
@@ -115,14 +117,16 @@ def session_register(session_id: str, user: User = Depends(teacher_only), db: Se
     if session.section_id:
         query = query.filter(Enrollment.section_id == session.section_id)
     records = {row.student_id: row for row in db.query(Attendance).filter(Attendance.session_id == session.id).all()}
-    ended = _as_utc(session.ends_at) + timedelta(minutes=session.grace_minutes) < utc_now()
+    ended = as_utc(session.ends_at) + timedelta(minutes=session.grace_minutes) < utc_now()
     items = []
     for enrollment, student, student_user in query.order_by(Student.student_number).all():
         record = records.get(student.id)
         summary = course_attendance_summary(db, student, db.get(Course, session.course_id))
         items.append({"student_id": student.id, "student_number": student.student_number,
                       "student_name": student_user.full_name, "attendance_status": record.status if record else ("absent" if ended else "pending"),
-                      "marked_at": record.marked_at if record else None, "attendance_percentage": summary["percentage"],
+                      "marked_at": to_campus(record.marked_at) if record else None,
+                      "marked_on_ist": campus_date(record.marked_at) if record else None,
+                      "attendance_percentage": summary["percentage"],
                       "eligible_sessions": summary["total_eligible_sessions"]})
     return {"session": _session_view(db, session), "students": items, "total": len(items)}
 
@@ -219,10 +223,13 @@ def export_csv(course_id: str | None = None, session_id: str | None = None,
             if _session_is_assigned(db, teacher.id, row[3])]
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
-    writer.writerow(["student_number", "student_name", "course_code", "course_name", "session_id", "status", "marked_at_utc"])
+    writer.writerow(["student_number", "student_name", "course_code", "course_name", "session_id", "status",
+                     "marked_on_ist", "marked_at_ist"])
     for attendance, student, student_user, session, course in rows:
         writer.writerow([_csv_safe(student.student_number), _csv_safe(student_user.full_name), _csv_safe(course.course_code),
-                         _csv_safe(course.name), session.id, attendance.status, _as_utc(attendance.marked_at).isoformat()])
+                         _csv_safe(course.name), session.id, attendance.status,
+                         campus_date(attendance.marked_at).isoformat(),
+                         to_campus(attendance.marked_at).isoformat()])
     stream.seek(0)
     return StreamingResponse(iter([stream.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=ssams-teacher-attendance.csv"})
@@ -252,7 +259,8 @@ def _session_view(db: Session, session: ClassSession) -> dict:
     return {"id": session.id, "course_id": session.course_id, "course_code": course.course_code if course else None,
             "course_name": course.name if course else None, "section_id": session.section_id,
             "section_name": section.name if section else "All sections", "title": session.title,
-            "starts_at": session.starts_at, "ends_at": session.ends_at, "grace_minutes": session.grace_minutes,
+            "starts_at": to_campus(session.starts_at), "ends_at": to_campus(session.ends_at),
+            "starts_on_ist": campus_date(session.starts_at), "grace_minutes": session.grace_minutes,
             "cancelled": session.cancelled}
 
 
@@ -261,7 +269,3 @@ def _csv_safe(value: str) -> str:
     first_nonspace = value.lstrip(" \t\r\n")[:1]
     dangerous = value[:1] in {"\t", "\r", "\n"} or first_nonspace in {"=", "+", "-", "@"}
     return "'" + value if dangerous else value
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

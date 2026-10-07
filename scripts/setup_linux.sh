@@ -31,5 +31,8 @@ cat <<'EOF'
 Dependencies are installed. Before starting the app:
   1. Edit .env and set unique SESSION_SECRET and BIOMETRIC_ENCRYPTION_KEY values.
   2. Use `cd backend && .venv/bin/python -m app.cli generate-secrets` to generate candidates.
-  3. Run `scripts/run_linux.sh` from the repository root.
+  3. Run `scripts/run_linux.sh` from the repository root for the unified single-port app
+     (http://localhost:8000), or `scripts/dev_linux.sh` for the Vite development workflow
+     (http://localhost:5173).
+The application timezone defaults to Asia/Kolkata (IST, UTC+05:30); no host timezone change is needed.
 EOF

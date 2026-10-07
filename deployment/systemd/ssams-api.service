@@ -10,6 +10,9 @@ Group=ssams
 WorkingDirectory=/opt/ssams/backend
 EnvironmentFile=/etc/ssams/ssams.env
 Environment=PYTHONUNBUFFERED=1
+# Application/business timezone (IST). The app also derives this from CAMPUS_TIMEZONE in the env
+# file; setting TZ here additionally aligns log line formatting on Linux hosts running on UTC.
+Environment=TZ=Asia/Kolkata
 ExecStart=/opt/ssams/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=3

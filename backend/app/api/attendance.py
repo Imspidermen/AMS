@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import secrets
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_roles
 from app.core.config import settings
-from app.core.security import opaque_hash, secret_hash, utc_now
+from app.core.security import opaque_hash, secret_hash
+from app.core.timezone import as_utc, campus_date, to_campus, utc_now
 from app.db.session import get_db
 from app.models.entities import (
     Attendance,
@@ -55,7 +56,7 @@ class AttendanceAttemptInput(BaseModel):
     def require_timezone(cls, value: datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("Location measurement timestamp must include a timezone")
-        return value.astimezone(timezone.utc)
+        return as_utc(value)
 
 
 @router.get("/sessions")
@@ -79,13 +80,14 @@ def eligible_sessions(user: User = Depends(student_only), db: Session = Depends(
         if session.id in seen or not _enrollment_matches(db, student.id, session):
             continue
         seen.add(session.id)
-        start, end = _as_utc(session.starts_at), _as_utc(session.ends_at)
+        start, end = as_utc(session.starts_at), as_utc(session.ends_at)
         if start <= now <= end + timedelta(minutes=session.grace_minutes):
             if not db.query(Attendance).filter(Attendance.student_id == student.id,
                                                Attendance.session_id == session.id).first():
                 result.append({"id": session.id, "course_id": course.id, "course_code": course.course_code,
-                               "course_name": course.name, "title": session.title, "starts_at": start,
-                               "ends_at": end, "grace_minutes": session.grace_minutes,
+                               "course_name": course.name, "title": session.title,
+                               "starts_at": to_campus(start), "ends_at": to_campus(end),
+                               "starts_on_ist": campus_date(start), "grace_minutes": session.grace_minutes,
                                "location_name": location.name})
     result.sort(key=lambda row: row["starts_at"])
     return result
@@ -120,7 +122,7 @@ def start_attempt(payload: AttendanceAttemptInput, user: User = Depends(student_
         VerificationAttempt.status == "rejected",
         VerificationAttempt.reason.in_(["face_mismatch", "liveness_expired", "liveness_frame_limit"]),
     ).order_by(VerificationAttempt.created_at.desc()).first()
-    if last_failed and (_as_utc(now) - _as_utc(last_failed.created_at)).total_seconds() < 30:
+    if last_failed and (as_utc(now) - as_utc(last_failed.created_at)).total_seconds() < 30:
         raise HTTPException(429, detail={"code": "verification_cooldown",
             "message": "Please wait 30 seconds before starting another verification attempt."})
     location = db.get(Location, session.location_id)
@@ -166,7 +168,7 @@ def start_attempt(payload: AttendanceAttemptInput, user: User = Depends(student_
         db.rollback()
         raise
     return {"attempt_id": attempt.id, "challenge_id": challenge.id, "challenge_token": raw_token,
-            "actions": challenge.actions, "expires_at": challenge.expires_at,
+            "actions": challenge.actions, "expires_at": to_campus(challenge.expires_at),
             "maximum_frames": settings.liveness_max_frames}
 
 
@@ -259,7 +261,7 @@ def submit_attendance(
         attempt.status = "accepted"
         attempt.reason = None
         challenge.consumed_at = now
-        status_value = "late" if now > _as_utc(session.starts_at) + timedelta(minutes=session.grace_minutes) else "present"
+        status_value = "late" if now > as_utc(session.starts_at) + timedelta(minutes=session.grace_minutes) else "present"
         record = Attendance(
             student_id=student.id,
             session_id=session.id,
@@ -309,7 +311,8 @@ def attendance_history(
     rows = query.order_by(Attendance.marked_at.desc()).offset(offset).limit(limit).all()
     items = [{"id": record.id, "session_id": session.id, "course_id": course.id,
               "course_code": course.course_code, "course_name": course.name, "status": record.status,
-              "marked_at": record.marked_at, "title": session.title, "starts_at": session.starts_at,
+              "marked_at": to_campus(record.marked_at), "marked_on_ist": campus_date(record.marked_at),
+              "title": session.title, "starts_at": to_campus(session.starts_at),
               "correction_reason": record.correction_reason} for record, session, course in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -345,7 +348,7 @@ def _enrollment_matches(db: Session, student_id: str, session: ClassSession) -> 
 
 
 def _ensure_session_open(session: ClassSession, now: datetime):
-    start, end = _as_utc(session.starts_at), _as_utc(session.ends_at)
+    start, end = as_utc(session.starts_at), as_utc(session.ends_at)
     if now < start:
         raise HTTPException(409, detail={"code": "session_not_started", "message": "Attendance is not open yet."})
     if now > end + timedelta(minutes=session.grace_minutes):
@@ -407,8 +410,5 @@ def _reject_attempt(db: Session, attempt: VerificationAttempt, challenge: Livene
 
 def _attendance_result(record: Attendance, replayed: bool = False) -> dict:
     return {"attendance_id": record.id, "session_id": record.session_id, "status": record.status,
-            "marked_at": record.marked_at, "message": "Attendance recorded successfully.", "replayed": replayed}
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            "marked_at": to_campus(record.marked_at), "marked_on_ist": campus_date(record.marked_at),
+            "message": "Attendance recorded successfully.", "replayed": replayed}

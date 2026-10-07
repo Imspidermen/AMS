@@ -24,24 +24,30 @@ Configure at least:
 
 ```dotenv
 APP_ENV=development
+APP_HOST=0.0.0.0
+APP_PORT=8000
+CAMPUS_TIMEZONE=Asia/Kolkata
 DATABASE_URL=sqlite:///../data/ssams.db
 SESSION_SECRET=<unique generated value, at least 32 random bytes>
 BIOMETRIC_ENCRYPTION_KEY=<generated Fernet key>
 COOKIE_SECURE=false
-CAMPUS_TIMEZONE=Asia/Kolkata
+FRONTEND_DIST=frontend/dist
 MODEL_DIR=models
-CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
+
+`CAMPUS_TIMEZONE` is the single source of truth for business time. `Asia/Kolkata` (IST, UTC+05:30) is the default: attendance days, schedule windows, reports, exports, API timestamps and log lines are all expressed in it, while instants are still stored as UTC. Changing it later is a policy decision — existing rows keep their exact instants and are simply re-interpreted.
+
+`APP_HOST`/`APP_PORT` define the **one** public port. The default port-8000 server serves the built React app at `/` and the API at `/api`, so no CORS entry is needed (`CORS_ORIGINS` is empty by default and only used for a deliberate cross-origin deployment).
 
 The `.env` path is loaded from the repository root. The default SQLite URL is relative to the backend process working directory. Do not expose the development server to an untrusted network.
 
-Start both services from the repository root:
+Start the unified application (one port) from the repository root:
 
 ```bash
 ./scripts/run_linux.sh
 ```
 
-The script runs Alembic migrations, serves FastAPI on port `8000`, serves Vite on port `5173`, and proxies browser `/api/v1` calls through Vite. Open `http://localhost:5173` and use a separate terminal for the first admin bootstrap:
+The script builds `frontend/dist` when needed, applies Alembic migrations, and starts FastAPI on `APP_HOST:APP_PORT` (`0.0.0.0:8000` by default). It serves the React application at `http://localhost:8000/` and the API at `http://localhost:8000/api/v1` — the same single port a tunnel should expose. Use a separate terminal for the first admin bootstrap:
 
 ```bash
 cd backend
@@ -50,18 +56,36 @@ cd backend
 
 The CLI prompts for the administrator email, name, and password and refuses to create a second bootstrap administrator. There are no default production credentials.
 
-For separate terminals instead of the combined script:
+Equivalent manual commands:
+
+```bash
+# Terminal 1 — build once, then review/migrate the database
+cd frontend && npm run build
+cd ../backend
+.venv/bin/python -m app.cli migrate
+.venv/bin/python -m app.cli serve            # frontend + API on APP_PORT from the root .env
+```
+
+### Development mode (Vite hot reload)
+
+The Vite workflow is unchanged and still recommended while editing frontend code. Vite proxies `/api` to the backend (target `SSAMS_API_TARGET`, otherwise `http://127.0.0.1:$APP_PORT`), so the browser only ever uses one origin:
+
+```bash
+./scripts/dev_linux.sh
+```
 
 ```bash
 # Terminal 1
 cd backend
 .venv/bin/python -m app.cli migrate
-.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+.venv/bin/python -m app.cli serve
 
 # Terminal 2
 cd frontend
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
+
+Open `http://localhost:5173` in development; open `http://localhost:8000` for the unified/production-style application and for tunnels.
 
 ## Native Windows PowerShell
 
@@ -74,13 +98,19 @@ Set-Location .\backend
 Set-Location ..
 ```
 
-Edit `.env`, replace both secrets, and start the API and Vite development server in separate PowerShell windows:
+Edit `.env`, replace both secrets, then start the **unified single-port** application (it builds the frontend when `frontend\dist` is missing, migrates the database, and serves everything on `APP_PORT`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_windows.ps1
 ```
 
-The script opens two PowerShell terminals. Bootstrap the first admin from another window:
+Open `http://localhost:8000`. For the two-process Vite development workflow instead (Vite on 5173 with `/api` proxied to the API), use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev_windows.ps1
+```
+
+The unified script stays in the foreground and stops with `Ctrl+C`. Bootstrap the first admin from another window:
 
 ```powershell
 Set-Location .\backend
@@ -102,12 +132,20 @@ Enter a unique secret at the interactive prompt. In the private root `.env`, set
 
 ```dotenv
 APP_ENV=production
+APP_HOST=0.0.0.0
+APP_PORT=8000
 DATABASE_URL=postgresql+psycopg://ssams_app:<URL-ENCODED-SECRET>@127.0.0.1:5432/ssams?sslmode=verify-full
 COOKIE_SECURE=true
 CAMPUS_TIMEZONE=Asia/Kolkata
+FRONTEND_DIST=frontend/dist
 MODEL_DIR=models
 CORS_ORIGINS=https://attendance.example.edu
 ```
+
+A production deployment has two supported shapes:
+
+1. **Single-port application** — keep `APP_HOST=0.0.0.0`/`APP_PORT=8000`, run `python -m app.cli serve`, and let the institution's TLS terminator/tunnel forward to that one port. The frontend is served from the same origin as the API, so cookies are same-site and `CORS_ORIGINS` can stay empty.
+2. **Reverse proxy with static frontend** — bind Uvicorn to loopback (`APP_HOST=127.0.0.1`) and let Nginx serve `frontend/dist` at `/` while proxying `/api/` to the backend, as shown in [`deployment/`](../deployment/). Set `CORS_ORIGINS` only if the browser really loads the app from another origin.
 
 Use a separate secrets manager/environment file readable only by the service account; do not use the example URL/password as a credential. Configure PostgreSQL TLS and verify its CA, restrict network access, and back up the database and both application keys independently. Run migrations from `backend/` using the production virtual environment before deploying the new application version:
 
@@ -167,9 +205,10 @@ Compare PowerShell output exactly with `models/SHA256SUMS`; never bypass a misma
 
 Browser camera and geolocation APIs require a **secure context**. `http://localhost` is treated specially on the development device, but a phone accessing `http://<computer-LAN-IP>:5173` is not a secure context. For a phone:
 
-1. Use an institution-controlled DNS name and a trusted TLS certificate, with Nginx/IIS or an approved TLS gateway serving the frontend and proxying `/api/` to Uvicorn.
+1. Use an institution-controlled DNS name and a trusted TLS certificate, with Nginx/IIS or an approved TLS gateway serving the frontend and proxying `/api/` to Uvicorn. For quick testing on your own machine, a tunnel is enough: build the frontend, run `python -m app.cli serve`, then `ngrok http 8000` and open the resulting `https://…` URL — the app, `/api/*` and `/docs` all live on that one port, and phones get a secure context for the camera/geolocation.
 2. Use the same HTTPS origin for frontend and API so session cookies remain same-site. Set `APP_ENV=production` or `COOKIE_SECURE=true`; configure `CORS_ORIGINS` only for explicitly used cross-origin origins.
 3. Permit camera and location for that HTTPS origin in the mobile browser and OS settings. SSAMS requests a location only after a student starts an eligible attendance attempt; do not rely on indoor GPS accuracy.
-4. For local development only, Vite can use `SSAMS_DEV_TLS_KEY` and `SSAMS_DEV_TLS_CERT` configured in `frontend/.env.local`. Install/trust the issuing development CA on the phone; do not use a self-signed certificate users cannot validate.
+4. For local development only, Vite can use `SSAMS_DEV_TLS_KEY` and `SSAMS_DEV_TLS_CERT` configured in `frontend/.env.local` (see `frontend/.env.example`). Install/trust the issuing development CA on the phone; do not use a self-signed certificate users cannot validate.
+5. For a quick device test without any certificate work, use the unified port plus a tunnel (`python -m app.cli serve` then `ngrok http 8000`): the tunnel terminates TLS, so the browser gets the secure context that camera and geolocation require.
 
 The Vite proxy points at `http://127.0.0.1:8000` from the **development server**, not from the user's browser. Production requests should use relative `/api/v1` paths through the configured reverse proxy.

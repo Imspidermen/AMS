@@ -5,7 +5,7 @@ import {
   GraduationCap, MapPin, Sparkles, Users,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { api, formatDate, formatMonthDay, formatPercent } from '../lib/api';
+import { api, DEFAULT_CAMPUS_TIMEZONE, formatDate, formatMonthDay, formatPercent } from '../lib/api';
 import { Card, EmptyState, Loading, Notice, PageHeader, StatCard, Badge } from '../components/ui';
 
 interface CourseSummary {
@@ -136,7 +136,7 @@ export function AdminDashboard() {
           <div><span><i className="status-dot status-green" /> Database</span><Badge tone="success">Connected</Badge></div>
           <div><span><i className={`status-dot ${health.data.vision_models?.ready ? 'status-green' : 'status-amber'}`} /> Face models</span><Badge tone={health.data.vision_models?.ready ? 'success' : 'warning'}>{health.data.vision_models?.ready ? 'Verified' : 'Needs setup'}</Badge></div>
           <div><span><i className={`status-dot ${health.data.vision_models?.biometric_storage_key_configured ? 'status-green' : 'status-red'}`} /> Biometric key</span><Badge tone={health.data.vision_models?.biometric_storage_key_configured ? 'success' : 'danger'}>{health.data.vision_models?.biometric_storage_key_configured ? 'Valid' : 'Unavailable'}</Badge></div>
-          <div><span><i className="status-dot status-green" /> Campus timezone</span><small>{health.data.campus_timezone || 'UTC'}</small></div>
+          <div><span><i className="status-dot status-green" /> Campus timezone</span><small>{health.data.campus_timezone || DEFAULT_CAMPUS_TIMEZONE}</small></div>
           <div><span><i className="status-dot status-green" /> Inference</span><small>Local CPU</small></div>
         </div> : health.isError ? <Notice kind="error">System readiness could not be checked. Review the API and database service.</Notice> : <div className="health-wait"><Loading label="Checking readiness…" /></div>}
         {health.data && !health.data.vision_models?.ready && <p className="health-note">Install and checksum the local face models before enabling biometric attendance. <Link to="/admin/system">View setup</Link></p>}

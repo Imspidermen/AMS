@@ -1,13 +1,14 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.core.timezone import as_utc, utc_now
 from app.models.entities import Attendance, ClassSession, Course, Enrollment, Student
 
 
 def course_attendance_summary(db: Session, student: Student, course: Course, now: datetime | None = None) -> dict:
-    now = _as_utc(now or datetime.now(timezone.utc))
+    now = as_utc(now or utc_now())
     enrollment = (
         db.query(Enrollment)
         .filter(Enrollment.student_id == student.id, Enrollment.course_id == course.id, Enrollment.active.is_(True))
@@ -23,7 +24,7 @@ def course_attendance_summary(db: Session, student: Student, course: Course, now
         .filter(ClassSession.course_id == course.id, section_filter, ClassSession.cancelled.is_(False))
         .all()
     )
-    ended = [session for session in sessions if _as_utc(session.ends_at) + timedelta(minutes=session.grace_minutes) <= now]
+    ended = [session for session in sessions if as_utc(session.ends_at) + timedelta(minutes=session.grace_minutes) <= now]
     attendance = {
         record.session_id: record
         for record in db.query(Attendance).filter(
@@ -82,7 +83,3 @@ def _empty_summary(course: Course) -> dict:
         "percentage": None,
         "below_threshold": False,
     }
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

@@ -12,7 +12,7 @@
 | Raw camera frames | Enrollment/verification processing | Not intentionally persisted to SSAMS database or logs; frames are read and processed in memory | Browser consent and permissions; API upload-size limit; do not add frame/body logging |
 | Liveness progress | Temporal challenge | Temporary challenge actions, counters, timestamps, a digest of the most recent frame, and completion/consumption state | Challenge is bound to user/session and token; expire and clean under an institution-set retention policy. Digest/progress are still sensitive metadata |
 | Geofence check | Verify reported point against configured classroom boundary | The student's raw latitude/longitude are not stored; distance, reported accuracy, measurement time, outcome/reason, and location/session references are retained | Server rechecks geofence and freshness; browser coordinates are untrusted and spoofable |
-| Attendance, correction, notification, audit events | Institutional attendance, appeal, accountability | Yes; server timestamps in UTC | Student self-only; teacher assigned-course scope; admin scope. Attendance/audit are not automatically erased by cleanup |
+| Attendance, correction, notification, audit events | Institutional attendance, appeal, accountability | Yes; instants stored as UTC and displayed in the campus timezone (IST/Asia/Kolkata by default) | Student self-only; teacher assigned-course scope; admin scope. Attendance/audit are not automatically erased by cleanup |
 
 Review the actual model and migration code for the release you deploy. The web privacy notice is a starting template and must be customized to campus retention, support, legal basis, accessibility, and alternative attendance processes.
 

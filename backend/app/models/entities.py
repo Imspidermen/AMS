@@ -23,7 +23,13 @@ from app.db.base import Base
 
 
 class UTCDateTime(TypeDecorator):
-    """Store UTC datetimes and restore an explicit UTC offset on every dialect."""
+    """Store UTC instants and restore an explicit UTC offset on every dialect.
+
+    Storage contract: timestamps are persisted as UTC so instants stay correct no matter what the
+    host operating-system timezone is. Business time (attendance day, schedules, reports, API
+    responses, logs) is derived from these instants in the configured campus timezone
+    (``CAMPUS_TIMEZONE``, default ``Asia/Kolkata``) by :mod:`app.core.timezone`.
+    """
 
     impl = DateTime(timezone=True)
     cache_ok = True
@@ -44,6 +50,7 @@ def new_id() -> str:
 
 
 def utcnow() -> datetime:
+    """Column default: the current instant, always stored as UTC."""
     return datetime.now(timezone.utc)
 
 
